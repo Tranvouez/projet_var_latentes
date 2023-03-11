@@ -1,3 +1,260 @@
 ---
 title: "Codes"
+cold-folde : true 
 ---
+
+1.  Importation et modification
+
+```{r}
+#Chargement des librairies
+{
+  library(readxl)
+  library(caret)
+  library(klaR)
+  library(ggplot2)
+  library(FactoMineR)
+  library(factoextra)
+  library(NbClust)
+  library(JLutils)
+  library(DiscriMiner)
+}
+```
+
+```{r}
+df <- read.csv2("data/phoneme.csv", sep= ";")
+df[, 2:257] <- as.data.frame(lapply(df[, 2:257], as.numeric))
+df[,258]<-as.factor(df[,258])
+
+#str(df) 
+
+# df_train <- df[grepl("train", df$speaker), ]
+# df_test <- df[grepl("test", df$speaker), ]
+# write.csv2(df_test,"data/df_test.csv", row.names= FALSE)
+# write.csv2(df_train,"data/df_train.csv", row.names =FALSE)
+
+df_test <-read.csv2("data/df_test.csv", sep = ";")
+df_test[, 2:257] <- as.data.frame(lapply(df_test[, 2:257], as.numeric))
+df_test[,258] <- as.factor(df_test[,258])
+df_train<-read.csv2("data/df_train.csv", sep = ";")
+df_train[, 2:257] <- as.data.frame(lapply(df_train[, 2:257], as.numeric))
+df_train[,258] <- as.factor(df_train[,258])
+```
+
+# ACP
+
+```{r}
+names(df_train)
+df_train_2 <- df_train[,-c(1,259)]
+df_test_2 <- df_test[,-c(1,259)]
+names(df_train_2)
+res.pca <- PCA (df_train_2,scale.unit=TRUE,quali.sup=257,graph=FALSE)
+res<-barplot(res.pca$eig[,2],xlab="Dim.",ylab="Percentage of variance")
+
+```
+
+```{r}
+plot(res.pca,choix="var")
+```
+
+```{r}
+FactoMineR::plot.PCA(res.pca,choix="ind",habillage=11,label="quali")
+```
+
+```{r}
+#dimdesc(res.pca,axes=1:4)
+```
+
+
+# Classification
+
+Effectuer une classification hiérarchique sur la base des variables quantitatives. A la lecture du dendrogramme, et des différents indices, déterminer le nombre de classes é retenir. Effectuer une consolidation des classes obtenues par la méthode des kmeans. Caractériser les classes et représenter les sur la plan factoriel de l’ACP. Y a t’il un lien entre les classes et la possession de la carte VISA premier. Enfin, vous pourrez tester en paralléle la fonction HCPC.
+
+Quand il n'y pas la même variabilité, il faut standardisé.
+
+```{r}
+data.cr<-scale(df_train_2[,-c(257)],center=TRUE,scale=TRUE)
+data.dist<-dist(data.cr)
+data.hca<-hclust(data.dist,method="ward.D2")
+#par(mfrow=c(1,2))
+barplot(rev(data.hca$height)[1:30],main="Evolution du critére d agrégation - VISA")
+plot(data.hca,hang=-1,cex=0.8)
+```
+On part de la dernière aggrégation, c'est pour ça que l'on met un `rev`. Le  `$height` correspond au citere d'aggregation. On s'interesse aux derniers paliers, on prend les 30 derniers. Il faut déterminer le dernier saut important. Ici, on détecte le premier saut au niveau de la classe 3; IL faut regarder la hauteru de palier des dendrogrammes. On va donc parametrer `K=3`. 
+
+```{r}
+K=4
+A2Rplot(data.hca, k=K, show.labels=TRUE)
+```
+
+
+```{r}
+#|  layout-ncol: 2
+res.cutree <- cutree(data.hca,4)
+
+centers <- aggregate(data.cr, by=list(res.cutree), FUN=mean) #gravity centers
+centers <- centers[,-1]
+
+data.kmeans <- kmeans(data.cr, centers=centers, algorithm="MacQueen")
+data.kmeans.alea <- kmeans(data.cr, centers=centers, nstart = 50, iter.max = 50, algorithm="MacQueen")
+
+data.tot <- cbind(as.data.frame(df_train_2), Clas = as.factor(data.kmeans$cluster)) 
+
+par(mfrow = c(1,3))
+ncol(data.tot)
+
+plot(catdes(data.tot, num.var = 257), barplot = TRUE)
+table(data.tot[,257:258])
+```
+
+### Interprétation de `catdes`
+
+#### Pour les variables qualitatives
+
+On cherche à décrire nos classes. Caractérisation de la partition
+50% de la classe 1 qui appartient a la modalité 1. 48 des clients possèdent la carte alors aque dan sla population, il y en a que 33%. Si les % sont significativement différents, la p-value sera faible et on pourra dire qu'il a significativement plus de clients avec la carte VP dans la classe 1.
+
+Rien pour la classe 2
+
+Pour la classe 3, 85% des clients ne possèdent pas la carte VP. 
+
+#### Pour les variables quantitatives
+
+`vtest`: Quand le `vtest` est positif, la moyenne de la classe est significativement supérieur à la moyenne globale. 
+
+
+
+```{r}
+chisq.test(table(data.tot[,257:258]))
+
+```
+```{r}
+res.PCA <- PCA(data.tot,scale.unit=TRUE,quali.sup=c(257,258))
+plot(res.PCA,habillage=258,label="none")
+```
+# Discrimination
+
+On cherche à présent à discriminer les possesseurs de la carte Visa Premier de ceux qui ne la possèdent pas. Pour ce faire, nous réalisons tout d’abord une AFD suivie de la construction de la règle de classement par approche géométrique (geoda). La qualité du modèle sera évaluée sur la base d’un taux d’erreur sur la base d’apprentissage en validation croisée et sur une base test.
+
+On partitionne le jeu de données en apprentissage test
+
+
+```{r}
+intrain<-createDataPartition(df_train_2$g,p=0.8,list=FALSE)
+#intrain
+save(intrain,file="data/intrain.Rdata")
+table(df_train_2$g)/nrow(df_train_2)
+```
+
+```{r}
+table(df_train_2[intrain,257])/nrow(df_train_2[intrain,]) # app
+```
+
+```{r}
+table(df_train_2[-intrain,257])/nrow(df_train_2[-intrain,]) # test
+
+```
+
+```{r}
+X <- df_train_2[intrain, 1:256]
+y <- df_train_2[intrain,257]
+```
+
+```{r}
+### ??????????,,,
+boxplot(df_train_2$GAGETL ~ data$CARVP)
+boxplot(data$ENDETL ~ data$CARVP)
+```
+
+
+```{r}
+#AFD
+res.desDA <- desDA(X,y, covar = "within")
+round(res.desDA$power,4)
+```
+
+```{r}
+rap.cor <- res.desDA$values[1]/(1+res.desDA$values[1]) ##rapport de corrélation de la var discriminante
+round(res.desDA$discor,4) #corrélation var discriminante et var X
+```
+Quand on regard le `cor_ratip` toutes les var sont significativement liés a la possession de la carte sauf `RELAT`. Il n'y a acun lien entre l'ancieneté et le fait de posséder une carte. PLus la corrélation est forte, plus le lien entre les var est forte. Ici, la var la plus lié au fait de posséder la carte et `MOYRVL`, rapport de corrélation à 22%. On peut faire l'hypothese que ceux qui possedent la carte visa ont des mouvents net créditeurs supérieurs à ceux des autres. Le fait d'être un homme ou une femme joue également un rôle important, les hommes possedent plus la carte que les femmes (R^2 = 0.11). Plus généralement, on s'intéresse à ceux supérieurs à 10% (choix arbitraire). 
+
+Deux modalités donc une seule composante.
+
+```{r}
+res.model <- data.frame(scores=res.desDA$scores[,1],g=y)
+ggplot(data=res.model) +
+  geom_boxplot(aes(x=g, y = scores, fill = g)) +
+  theme_bw()
+```
+Ceux qui sont au dessus de 0 ont la carte, ceux en dessous n'ont pas la carte. 
+
+
+```{r}
+corRatio(res.desDA$scores[,1],y)
+```
+
+```{r}
+FRatio(res.desDA$scores[,1],y)
+```
+
+```{r}
+# calcul de la pertinence des X à entrer
+res.desDA.forward <- greedy.wilks(X,y,niveau=0.05)
+res.desDA.forward
+```
+Difference de vecteur de moyenne, le centres de gravités sont ils les mêmes ? Quand on rajoute une variables est ce que cela change les résultats.
+Il commennce par la var qui discirmine le plus, ensuite, il rajoute conditionnellement à la premiere. Il rajoute celle qui conditionnnelemtn à la premiere, permet de mieux discriminer. 
+
+
+
+```{r}
+# "MOYRVL" "sexer"  "RELAT"  "OPGNBL" "KVUNB"  "AGER"   "QSMOY"
+res.desDA.forward$results[,1]
+```
+
+```{r}
+ggplot(data=df_train_2) +
+  geom_boxplot(aes(x=g, y = KVUNB, fill = g)) +
+  theme_bw() 
+
+ggplot(data=df_train_2) +
+  geom_boxplot(aes(x=g, y = sexer, fill = g)) +
+  theme_bw()
+```
+
+Calcul du taux d'erreur
+
+```{r}
+#tester différents error_rates
+# 
+res.geoDA <- geoDA(X,y,validation="crossval")
+res.geoDA$error_rate #tx erreur en validation croisee
+```
+Le taux d'erreur permet de comparer les modèles. 
+
+```{r}
+pred.app <- classify(res.geoDA,X)  # On classe les données par rapporte au modèle 
+table.BC <- table(y,pred.app$pred_class)
+table.BC
+err.rate.app <- 1- sum(diag(table.BC))/sum(table.BC)
+err.rate.app
+```
+
+```{r}
+# sensibilité : vrai positif divisé pas le nombre des personnes effectivement "positives"
+table.BC[2,2]/sum(table.BC[2,])
+```
+
+```{r}
+# spécificité : vrai négatif divisé par le nombre des personnes effectivement "négatives"
+table.BC[1,1]/sum(table.BC[1,])
+```
+
+```{r}
+X.test <- df_test_2[-intrain,1:256]
+y.test<- df_test_2[-intrain,257]
+pred.test <- classify(res.geoDA,X.test)
+table.BC <- table(y.test,pred.test$pred_class)
+err.rate.test <- 1- sum(diag(table.BC))/sum(table.BC)
+err.rate.test
+```
